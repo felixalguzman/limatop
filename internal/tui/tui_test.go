@@ -73,6 +73,32 @@ func TestSelectionBounds(t *testing.T) {
 	}
 }
 
+func TestTableDetailPanelFollowsSelection(t *testing.T) {
+	m := seedModel()
+	// Seed history for both VMs; only the selected one's charts should show.
+	m.cpuHistory["test"] = []float64{10, 40, 70, 90, 50, 30}
+	m.memHistory["test"] = []float64{20, 25, 30, 45, 50, 60}
+	out := m.View()
+	if !strings.Contains(out, "test") {
+		t.Fatalf("expected selected VM name in detail panel, got:\n%s", out)
+	}
+	// Panel title should use the focus title style + section headers.
+	if !strings.Contains(out, "CPU") || !strings.Contains(out, "MEM") {
+		t.Fatalf("expected CPU + MEM chart headers in detail panel")
+	}
+	// Any filled braille means the chart rendered.
+	filled := false
+	for _, r := range out {
+		if r > 0x2800 && r <= 0x28FF {
+			filled = true
+			break
+		}
+	}
+	if !filled {
+		t.Fatalf("expected filled braille in detail panel, got:\n%s", out)
+	}
+}
+
 func TestTableSparkIsBraille(t *testing.T) {
 	m := seedModel()
 	m.cpuHistory["test"] = []float64{5, 25, 55, 95, 70, 30, 40, 60, 80}

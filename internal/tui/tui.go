@@ -448,7 +448,7 @@ func (m Model) View() string {
 	default:
 		switch m.view {
 		case ViewTable:
-			body = m.renderTable(s, innerW)
+			body = m.renderTableWithDetail(s, innerW, bodyHeight)
 		case ViewGrid:
 			body = m.renderGrid(s, innerW)
 		case ViewFocus:
@@ -661,6 +661,112 @@ func (m Model) renderTable(s styles, innerW int) string {
 	}
 
 	return strings.Join(rows, "\n")
+}
+
+// renderTableWithDetail stacks the scan-friendly table on top and a
+// btop-style "what's the selected VM doing" panel below. The detail panel is
+// only drawn when there's at least ~8 lines of slack after the table.
+func (m Model) renderTableWithDetail(s styles, innerW, bodyHeight int) string {
+	table := m.renderTable(s, innerW)
+	used := lipgloss.Height(table)
+	slack := bodyHeight - used - 2 // 2 for spacer + card outer rows
+	if slack < 8 {
+		return table
+	}
+	vm := m.selectedVM()
+	if vm == nil {
+		return table
+	}
+	detail := m.renderSelectedDetail(s, innerW, slack, vm)
+	return lipgloss.JoinVertical(lipgloss.Left, table, "", detail)
+}
+
+func (m Model) renderSelectedDetail(s styles, innerW, height int, vm *lima.VM) string {
+	th := m.theme()
+	lgw := innerW - borderOnly
+	contentW := innerW - cardHFrame
+	if contentW < 30 {
+		contentW = 30
+	}
+
+	title := s.FocusTitle.Render(vm.Name) + " " + statusLabel(s, vm.Status)
+	if vm.Status != "Running" {
+		body := strings.Join([]string{
+			title,
+			"",
+			s.Muted.Render("select a running VM to see live CPU and memory history."),
+		}, "\n")
+		return s.FocusCard.Width(lgw).Render(body)
+	}
+
+	// Two charts side by side; each has a 4-char axis gutter.
+	const gap = 2
+	const axisW = 5
+	chartH := height - 6 // border(2) + padding(2) + title(1) + blank(1) + padding
+	if chartH > 8 {
+		chartH = 8
+	}
+	if chartH < 3 {
+		chartH = 3
+	}
+	halfW := (contentW - gap) / 2
+	plotW := halfW - axisW
+	if plotW < 10 {
+		plotW = 10
+	}
+
+	cpuHist := m.cpuHistory[vm.Name]
+	memHist := m.memHistory[vm.Name]
+
+	cpuChart := composeChart(s, "CPU", th.Accent, cpuHist, plotW, chartH)
+	memChart := composeChart(s, "MEM", th.Info, memHist, plotW, chartH)
+
+	charts := lipgloss.JoinHorizontal(lipgloss.Top, cpuChart, strings.Repeat(" ", gap), memChart)
+
+	body := strings.Join([]string{title, "", charts}, "\n")
+	return s.FocusCard.Width(lgw).Render(body)
+}
+
+// composeChart returns a labeled braille chart block with a current/peak header
+// and a 0/50/100% axis on the left.
+func composeChart(s styles, label string, color lipgloss.Color, hist []float64, plotW, chartH int) string {
+	header := s.ProcessTitle.Render(label)
+	meta := s.Muted.Render("…")
+	if len(hist) > 0 {
+		cur := hist[len(hist)-1]
+		peak := 0.0
+		for _, v := range hist {
+			if v > peak {
+				peak = v
+			}
+		}
+		meta = s.Muted.Render(fmt.Sprintf("now %5.1f%%   peak %5.1f%%", cur, peak))
+	}
+	gap := plotW + 5 - lipgloss.Width(header) - lipgloss.Width(meta)
+	if gap < 1 {
+		gap = 1
+	}
+	headerLine := header + strings.Repeat(" ", gap) + meta
+
+	chart := brailleChart(hist, plotW, chartH, color)
+	chartLines := strings.Split(chart, "\n")
+	axisLines := make([]string, chartH)
+	for i := range axisLines {
+		lbl := "    "
+		switch i {
+		case 0:
+			lbl = "100%"
+		case chartH / 2:
+			lbl = " 50%"
+		case chartH - 1:
+			lbl = "  0%"
+		}
+		axisLines[i] = s.Muted.Render(lbl)
+	}
+	for i, ln := range chartLines {
+		chartLines[i] = axisLines[i] + " " + ln
+	}
+	return strings.Join(append([]string{headerLine}, chartLines...), "\n")
 }
 
 // ---- grid view ----
