@@ -67,9 +67,11 @@ type Model struct {
 	procs    []lima.Process
 	procsErr error
 
-	usage      map[string]lima.Usage
-	usageErr   map[string]error
-	cpuHistory map[string][]float64 // ring of recent CPU% per VM (newest last)
+	usage       map[string]lima.Usage
+	usageErr    map[string]error
+	cpuHistory  map[string][]float64 // ring of recent CPU% per VM (newest last)
+	memHistory  map[string][]float64
+	diskHistory map[string][]float64
 
 	width  int
 	height int
@@ -91,14 +93,24 @@ const sparkSamples = 200 // ring-buffer length per VM (≈10 min at refreshEvery
 
 func New() Model {
 	return Model{
-		themes:     theme.All(),
-		view:       ViewTable,
-		loading:    true,
-		usage:      map[string]lima.Usage{},
-		usageErr:   map[string]error{},
-		cpuHistory: map[string][]float64{},
-		busy:       map[string]string{},
+		themes:      theme.All(),
+		view:        ViewTable,
+		loading:     true,
+		usage:       map[string]lima.Usage{},
+		usageErr:    map[string]error{},
+		cpuHistory:  map[string][]float64{},
+		memHistory:  map[string][]float64{},
+		diskHistory: map[string][]float64{},
+		busy:        map[string]string{},
 	}
+}
+
+func pushSample(ring []float64, v float64) []float64 {
+	ring = append(ring, v)
+	if len(ring) > sparkSamples {
+		ring = ring[len(ring)-sparkSamples:]
+	}
+	return ring
 }
 
 func (m Model) Init() tea.Cmd {
@@ -219,11 +231,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.usage[msg.vm] = msg.usage
 			delete(m.usageErr, msg.vm)
-			hist := append(m.cpuHistory[msg.vm], msg.usage.CPUPct)
-			if len(hist) > sparkSamples {
-				hist = hist[len(hist)-sparkSamples:]
-			}
-			m.cpuHistory[msg.vm] = hist
+			m.cpuHistory[msg.vm] = pushSample(m.cpuHistory[msg.vm], msg.usage.CPUPct)
+			m.memHistory[msg.vm] = pushSample(m.memHistory[msg.vm], msg.usage.MemPct)
+			m.diskHistory[msg.vm] = pushSample(m.diskHistory[msg.vm], msg.usage.DiskPct)
 		}
 
 	case tickMsg:
@@ -790,17 +800,24 @@ func (m Model) renderFocus(s styles, innerW, height int) string {
 		orDash(vm.Config.OS), orDash(vm.Arch), orDash(vm.VMType), orDash(vm.LimaVersion),
 	))
 
-	// Resource block
-	barW := width - 36
-	if barW < 10 {
-		barW = 10
-	}
+	// Resource charts: 2-row braille area chart per metric.
+	// Layout: "LBL │ [2-row chart] │ value/aux"  rendered via JoinHorizontal.
 	u, haveUsage := m.usage[vm.Name]
-	cpuLine := focusResource(s, "CPU", barW, th.Accent, th.Muted,
-		ternary(haveUsage, u.CPUPct, 0),
-		fmt.Sprintf("%d cores", vm.CPUs),
-		haveUsage && vm.Status == "Running",
-	)
+	const labelW = 6
+	const valueW = 20
+	chartW := width - labelW - valueW - 2
+	if chartW < 14 {
+		chartW = 14
+	}
+	running := vm.Status == "Running"
+
+	cpuPct := 0.0
+	if haveUsage {
+		cpuPct = u.CPUPct
+	}
+	cpuBlock := metricChart(s, "CPU", th.Accent, chartW, cpuPct,
+		fmt.Sprintf("%d cores", vm.CPUs), running && haveUsage, m.cpuHistory[vm.Name])
+
 	memPct := float64(vm.Memory) / (16 * (1 << 30)) * 100
 	if haveUsage && u.MemTotal > 0 {
 		memPct = u.MemPct
@@ -809,7 +826,7 @@ func (m Model) renderFocus(s styles, innerW, height int) string {
 	if haveUsage && u.MemTotal > 0 {
 		memLabel = fmt.Sprintf("%s / %s", humanBytes(u.MemUsed), humanBytes(u.MemTotal))
 	}
-	memLine := focusResource(s, "MEM", barW, th.Info, th.Muted, memPct, memLabel, haveUsage)
+	memBlock := metricChart(s, "MEM", th.Info, chartW, memPct, memLabel, haveUsage, m.memHistory[vm.Name])
 
 	dskPct := float64(vm.Disk) / (200 * (1 << 30)) * 100
 	if haveUsage && u.DiskTotal > 0 {
@@ -819,7 +836,7 @@ func (m Model) renderFocus(s styles, innerW, height int) string {
 	if haveUsage && u.DiskTotal > 0 {
 		dskLabel = fmt.Sprintf("%s / %s", humanBytes(u.DiskUsed), humanBytes(u.DiskTotal))
 	}
-	dskLine := focusResource(s, "DSK", barW, th.Purple, th.Muted, dskPct, dskLabel, haveUsage)
+	dskBlock := metricChart(s, "DSK", th.Purple, chartW, dskPct, dskLabel, haveUsage, m.diskHistory[vm.Name])
 
 	sshInfo := lipgloss.JoinHorizontal(lipgloss.Top,
 		s.Muted.Render("SSH    "), s.Value.Render(sshTarget(*vm)),
@@ -835,96 +852,47 @@ func (m Model) renderFocus(s styles, innerW, height int) string {
 
 	infoBlock := strings.Join(nonEmpty([]string{
 		title, subtitle, "",
-		cpuLine, memLine, dskLine, "",
+		cpuBlock, "",
+		memBlock, "",
+		dskBlock, "",
 		sshInfo, dirInfo, upInfo,
 	}), "\n")
 
 	header := s.FocusCard.Width(totalW - borderOnly).Render(infoBlock)
 
-	chart := m.renderCPUChartPanel(s, totalW, contentW, vm)
-
-	remaining := height - lipgloss.Height(header) - lipgloss.Height(chart) - 4
+	remaining := height - lipgloss.Height(header) - 2
 	procPanel := m.renderProcessPanel(s, totalW, contentW, remaining, vm)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", chart, "", procPanel)
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", procPanel)
 }
 
-func (m Model) renderCPUChartPanel(s styles, totalW, contentW int, vm *lima.VM) string {
-	th := m.theme()
-	lgw := totalW - borderOnly
-	hist := m.cpuHistory[vm.Name]
-
-	chartH := 5
-	if vm.Status != "Running" {
-		body := s.Muted.Render(fmt.Sprintf("cpu history unavailable — vm is %s.", strings.ToLower(vm.Status)))
-		return s.ChartCard.Width(lgw).Render(body)
-	}
-
-	title := s.ProcessTitle.Render("cpu history")
-	meta := ""
-	if len(hist) > 0 {
-		cur := hist[len(hist)-1]
-		peak := 0.0
-		for _, v := range hist {
-			if v > peak {
-				peak = v
-			}
-		}
-		meta = s.Muted.Render(fmt.Sprintf("now %5.1f%%   peak %5.1f%%   last ~%ds",
-			cur, peak, len(hist)*int(refreshEvery/time.Second)))
-	}
-	titleLine := title
-	if meta != "" {
-		gap := contentW - lipgloss.Width(title) - lipgloss.Width(meta)
-		if gap < 1 {
-			gap = 1
-		}
-		titleLine = title + strings.Repeat(" ", gap) + meta
-	}
-
-	// Left-side percentage axis labels take 4 cells + 1-cell gutter.
-	const axisW = 5
-	plotW := contentW - axisW
-	if plotW < 10 {
-		plotW = 10
-	}
-	chart := brailleChart(hist, plotW, chartH, th.Accent)
-
-	// Assemble axis + chart side by side.
-	axisLines := make([]string, chartH)
-	for i := range axisLines {
-		label := "    "
-		switch i {
-		case 0:
-			label = "100%"
-		case chartH / 2:
-			label = " 50%"
-		case chartH - 1:
-			label = "  0%"
-		}
-		axisLines[i] = s.Muted.Render(label)
-	}
+// metricChart renders a 2-row braille area chart for a single metric, flanked
+// by a name + live % on the left and an auxiliary label on the right. When
+// `live` is false the percent is shown as a dash.
+func metricChart(s styles, label string, color lipgloss.Color, chartW int, pct float64, extra string, live bool, history []float64) string {
+	const rows = 2
+	chart := brailleChart(history, chartW, rows, color)
 	chartLines := strings.Split(chart, "\n")
-	for i, ln := range chartLines {
-		chartLines[i] = axisLines[i] + " " + ln
+	for len(chartLines) < rows {
+		chartLines = append(chartLines, strings.Repeat(" ", chartW))
 	}
-	body := strings.Join(append([]string{titleLine, ""}, chartLines...), "\n")
-	return s.ChartCard.Width(lgw).Render(body)
-}
 
-func focusResource(s styles, label string, barW int, fg, bg lipgloss.Color, pct float64, extra string, live bool) string {
-	bar := renderBar(barW, clampPct(pct), fg, bg)
-	pctStr := "  · "
+	name := s.Muted.Render(fmt.Sprintf("%-4s", label))
+	pctStr := s.Muted.Render("  — ")
 	if live {
-		pctStr = s.Value.Render(fmt.Sprintf("%5.1f%% ", pct))
-	} else {
-		pctStr = s.Muted.Render("  —    ")
+		pctStr = s.Value.Render(fmt.Sprintf("%4.0f%%", pct))
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top,
-		s.Muted.Render(fmt.Sprintf("%-4s", label)),
-		bar, " ",
-		pctStr, " ",
+	left := lipgloss.JoinVertical(lipgloss.Left, name, pctStr)
+
+	right := lipgloss.JoinVertical(lipgloss.Left,
 		s.Value.Render(extra),
+		s.Muted.Render(""),
+	)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		left, " ",
+		lipgloss.JoinVertical(lipgloss.Left, chartLines...),
+		" ", right,
 	)
 }
 
@@ -1238,13 +1206,6 @@ func clampPct(v float64) float64 {
 
 func maxInt(a, b int) int {
 	if a > b {
-		return a
-	}
-	return b
-}
-
-func ternary(cond bool, a, b float64) float64 {
-	if cond {
 		return a
 	}
 	return b

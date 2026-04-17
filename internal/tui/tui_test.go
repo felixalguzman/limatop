@@ -104,9 +104,6 @@ func TestFocusChartHasBraille(t *testing.T) {
 	if !filled {
 		t.Fatalf("expected populated braille chart in focus view, got:\n%s", out)
 	}
-	if !strings.Contains(out, "cpu history") {
-		t.Fatalf("expected chart panel title, got:\n%s", out)
-	}
 }
 
 func TestDeleteRequiresConfirmation(t *testing.T) {
