@@ -1213,6 +1213,12 @@ func brailleChart(samples []float64, width, height int, fg lipgloss.Color) strin
 		if topDot > dotsH {
 			topDot = dotsH
 		}
+		// Any non-zero sample gets at least one dot so a running baseline
+		// is visible even when utilization is well below one quantum
+		// (important at height=1, where one quantum = 25%).
+		if topDot == 0 && v > 0 {
+			topDot = 1
+		}
 		// Fill from the bottom (r=0) up to the sample's height.
 		for r := 0; r < topDot; r++ {
 			cellRow := height - 1 - r/4
