@@ -614,6 +614,7 @@ func (m Model) renderTable(s styles, innerW int) string {
 		{"STATUS", 10, 0},
 		{"CPU%", 12, 3},
 		{"MEM%", 12, 3},
+		{"NET", 12, 3},
 		{"CPU", 5, 0},
 		{"MEM", 10, 0},
 		{"DISK", 16, 2},
@@ -697,6 +698,7 @@ func (m Model) renderTable(s styles, innerW int) string {
 			statusLabel(s, vm.Status),
 			m.sparkCell(vm, m.cpuHistory[vm.Name], th.Accent, th, cols[3].width),
 			m.sparkCell(vm, m.memHistory[vm.Name], th.Info, th, cols[4].width),
+			m.netCell(vm, th, cols[5].width),
 			intOrDash(vm.CPUs),
 			bytesOrDash(vm.Memory),
 			diskUsage(vm, m.usage[vm.Name]),
@@ -722,8 +724,8 @@ func (m Model) renderTable(s styles, innerW int) string {
 			switch idx {
 			case 0:
 				row.WriteString(lipgloss.NewStyle().Width(c.width).Render(cell))
-			case 2, 3, 4:
-				// status label + CPU%/MEM% sparklines carry their own color
+			case 2, 3, 4, 5:
+				// status label + CPU%/MEM%/NET sparklines carry their own color
 				row.WriteString(lipgloss.NewStyle().Width(c.width).Render(truncate(cell, c.width)))
 			default:
 				row.WriteString(rowStyle.Width(c.width).Render(truncate(cell, c.width)))
@@ -772,7 +774,7 @@ func (m Model) renderSelectedDetail(s styles, innerW, height int, vm *lima.VM) s
 		return s.FocusCard.Width(lgw).Render(body)
 	}
 
-	// Two charts side by side; each has a 4-char axis gutter.
+	// Three charts side by side, each with its own axis gutter.
 	const gap = 2
 	const axisW = 5
 	chartH := height - 6 // border(2) + padding(2) + title(1) + blank(1) + padding
@@ -782,19 +784,30 @@ func (m Model) renderSelectedDetail(s styles, innerW, height int, vm *lima.VM) s
 	if chartH < 3 {
 		chartH = 3
 	}
-	halfW := (contentW - gap) / 2
-	plotW := halfW - axisW
-	if plotW < 10 {
-		plotW = 10
+
+	thirdW := (contentW - 2*gap) / 3
+	plotW := thirdW - axisW
+	if plotW < 8 {
+		plotW = 8
 	}
 
 	cpuHist := m.cpuHistory[vm.Name]
 	memHist := m.memHistory[vm.Name]
+	netHist := m.netHistory[vm.Name]
 
 	cpuChart := composeChart(s, "CPU", th.Accent, cpuHist, plotW, chartH)
 	memChart := composeChart(s, "MEM", th.Info, memHist, plotW, chartH)
+	netHeader := "NET"
+	if rate := m.netRxRate[vm.Name] + m.netTxRate[vm.Name]; rate > 0 {
+		netHeader = fmt.Sprintf("NET %s", humanRate(rate))
+	}
+	netChart := composeChart(s, netHeader, th.Success, scaleToPeak(netHist), plotW, chartH)
 
-	charts := lipgloss.JoinHorizontal(lipgloss.Top, cpuChart, strings.Repeat(" ", gap), memChart)
+	charts := lipgloss.JoinHorizontal(lipgloss.Top,
+		cpuChart, strings.Repeat(" ", gap),
+		memChart, strings.Repeat(" ", gap),
+		netChart,
+	)
 
 	body := strings.Join([]string{title, "", charts}, "\n")
 	return s.FocusCard.Width(lgw).Render(body)
@@ -1240,6 +1253,47 @@ func (m Model) sparkCell(vm lima.VM, hist []float64, color lipgloss.Color, th th
 	pct := hist[len(hist)-1]
 	pctStr := lipgloss.NewStyle().Foreground(th.Foreground).Render(fmt.Sprintf("%4.0f%%", pct))
 	return spark + " " + pctStr
+}
+
+// netCell renders the NET% sparkline cell: a 1-row braille chart of the
+// combined rx+tx rate (scaled to peak) plus a compact current rate.
+func (m Model) netCell(vm lima.VM, th theme.Theme, width int) string {
+	if vm.Status != "Running" {
+		return lipgloss.NewStyle().Foreground(th.Muted).Render("—")
+	}
+	hist := m.netHistory[vm.Name]
+	if len(hist) == 0 {
+		return lipgloss.NewStyle().Foreground(th.Muted).Render("…")
+	}
+	rate := m.netRxRate[vm.Name] + m.netTxRate[vm.Name]
+	rateStr := compactRate(rate)
+	sparkW := width - lipgloss.Width(rateStr) - 1
+	if sparkW < 4 {
+		sparkW = 4
+	}
+	spark := brailleChart(scaleToPeak(hist), sparkW, 1, th.Success)
+	return spark + " " + lipgloss.NewStyle().Foreground(th.Foreground).Render(rateStr)
+}
+
+// compactRate renders bytes/sec in a minimal 5-char form: "1.2M", " 350K", etc.
+func compactRate(bps float64) string {
+	if bps <= 0 {
+		return "   0 "
+	}
+	units := []struct {
+		div   float64
+		label byte
+	}{
+		{1 << 30, 'G'},
+		{1 << 20, 'M'},
+		{1 << 10, 'K'},
+	}
+	for _, u := range units {
+		if bps >= u.div {
+			return fmt.Sprintf("%4.1f%c", bps/u.div, u.label)
+		}
+	}
+	return fmt.Sprintf("%4.0fB", bps)
 }
 
 func renderBar(width int, pct float64, fg, bg lipgloss.Color) string {
