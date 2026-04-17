@@ -25,6 +25,7 @@ type styles struct {
 
 	FooterBar lipgloss.Style
 	Key       lipgloss.Style
+	KeyCap    lipgloss.Style
 
 	TableHeader    lipgloss.Style
 	Row            lipgloss.Style
@@ -70,6 +71,9 @@ func (m Model) styles() styles {
 		FooterBar: lipgloss.NewStyle().
 			Foreground(t.Muted),
 		Key: lipgloss.NewStyle().Foreground(t.Foreground),
+		KeyCap: lipgloss.NewStyle().
+			Foreground(t.Accent).
+			Bold(true),
 
 		TableHeader: lipgloss.NewStyle().
 			Foreground(t.Muted).

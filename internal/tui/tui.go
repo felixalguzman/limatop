@@ -260,7 +260,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.view == ViewFocus {
 			m.view = ViewTable
 		}
-	case "s":
+	case "b":
 		vm := m.selectedVM()
 		if vm == nil {
 			return m, nil
@@ -277,7 +277,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.action = "starting " + vm.Name + "…"
 		m.actionMsg = ""
 		return m, startVM(vm.Name)
-	case "S", "x":
+	case "h":
 		vm := m.selectedVM()
 		if vm == nil {
 			return m, nil
@@ -413,12 +413,14 @@ func (m Model) renderHeader(s styles) string {
 }
 
 func (m Model) renderFooter(s styles) string {
-	keys := []string{
-		"j/k move", "enter focus", "v view", "s start", "S stop", "e shell", "r refresh", "t theme", "q quit",
+	hints := [][2]string{
+		{"j/k", "move"}, {"enter", "focus"}, {"v", "view"},
+		{"b", "boot"}, {"h", "halt"}, {"e", "shell"},
+		{"r", "refresh"}, {"t", "theme"}, {"q", "quit"},
 	}
 	var parts []string
-	for _, k := range keys {
-		parts = append(parts, s.Key.Render(k))
+	for _, h := range hints {
+		parts = append(parts, s.KeyCap.Render(h[0])+" "+s.Muted.Render(h[1]))
 	}
 	hint := strings.Join(parts, s.Muted.Render(" · "))
 	return s.FooterBar.Width(m.width).Render(" " + hint + " ")
