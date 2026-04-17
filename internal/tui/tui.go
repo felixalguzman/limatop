@@ -44,6 +44,16 @@ type usageMsg struct {
 	err   error
 }
 
+type actionDoneMsg struct {
+	vm     string
+	action string
+	err    error
+}
+
+type shellDoneMsg struct {
+	err error
+}
+
 // ---- model ----
 
 type Model struct {
@@ -65,6 +75,12 @@ type Model struct {
 
 	loading bool
 	err     error
+
+	// Transient status from the most recent start/stop action.
+	action    string // e.g. "starting default…"
+	actionMsg string // short result, e.g. "started default" or "stop failed: …"
+	actionErr bool
+	busy      map[string]string // vm -> in-flight action verb ("start"/"stop")
 }
 
 func New() Model {
@@ -74,6 +90,7 @@ func New() Model {
 		loading:  true,
 		usage:    map[string]lima.Usage{},
 		usageErr: map[string]error{},
+		busy:     map[string]string{},
 	}
 }
 
@@ -106,6 +123,24 @@ func fetchUsage(name string) tea.Cmd {
 
 func tick() tea.Cmd {
 	return tea.Tick(refreshEvery, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func startVM(name string) tea.Cmd {
+	return func() tea.Msg {
+		return actionDoneMsg{vm: name, action: "start", err: lima.Start(name)}
+	}
+}
+
+func stopVM(name string) tea.Cmd {
+	return func() tea.Msg {
+		return actionDoneMsg{vm: name, action: "stop", err: lima.Stop(name)}
+	}
+}
+
+func shellVM(name string) tea.Cmd {
+	return tea.ExecProcess(lima.ShellCmd(name), func(err error) tea.Msg {
+		return shellDoneMsg{err: err}
+	})
 }
 
 // ---- update ----
@@ -157,6 +192,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, tea.Batch(cmds...)
+
+	case actionDoneMsg:
+		delete(m.busy, msg.vm)
+		m.action = ""
+		if msg.err != nil {
+			m.actionMsg = fmt.Sprintf("%s %s failed: %s", msg.action, msg.vm, msg.err)
+			m.actionErr = true
+		} else {
+			m.actionMsg = fmt.Sprintf("%sed %s", msg.action, msg.vm)
+			m.actionErr = false
+		}
+		return m, fetchVMs()
+
+	case shellDoneMsg:
+		if msg.err != nil {
+			m.actionMsg = "shell exited: " + msg.err.Error()
+			m.actionErr = true
+		} else {
+			m.actionMsg = ""
+			m.actionErr = false
+		}
+		return m, fetchVMs()
 	}
 	return m, nil
 }
@@ -203,6 +260,52 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.view == ViewFocus {
 			m.view = ViewTable
 		}
+	case "s":
+		vm := m.selectedVM()
+		if vm == nil {
+			return m, nil
+		}
+		if _, inFlight := m.busy[vm.Name]; inFlight {
+			return m, nil
+		}
+		if vm.Status == "Running" || vm.Status == "Starting" {
+			m.actionMsg = vm.Name + " is already " + strings.ToLower(vm.Status)
+			m.actionErr = false
+			return m, nil
+		}
+		m.busy[vm.Name] = "start"
+		m.action = "starting " + vm.Name + "…"
+		m.actionMsg = ""
+		return m, startVM(vm.Name)
+	case "S", "x":
+		vm := m.selectedVM()
+		if vm == nil {
+			return m, nil
+		}
+		if _, inFlight := m.busy[vm.Name]; inFlight {
+			return m, nil
+		}
+		if vm.Status != "Running" {
+			m.actionMsg = vm.Name + " is not running"
+			m.actionErr = false
+			return m, nil
+		}
+		m.busy[vm.Name] = "stop"
+		m.action = "stopping " + vm.Name + "…"
+		m.actionMsg = ""
+		return m, stopVM(vm.Name)
+	case "e":
+		vm := m.selectedVM()
+		if vm == nil {
+			return m, nil
+		}
+		if vm.Status != "Running" {
+			m.actionMsg = "cannot shell into " + strings.ToLower(vm.Status) + " vm"
+			m.actionErr = true
+			return m, nil
+		}
+		m.actionMsg = ""
+		return m, shellVM(vm.Name)
 	}
 	return m, nil
 }
@@ -290,7 +393,16 @@ func (m Model) renderHeader(s styles) string {
 		viewName(m.view), th.Name, len(m.vms), plural(len(m.vms))))
 
 	left := lipgloss.JoinHorizontal(lipgloss.Top, title, meta)
-	right := s.HeaderMeta.Render(fmt.Sprintf(" %s ", time.Now().Format("15:04:05")))
+	status := ""
+	switch {
+	case m.action != "":
+		status = s.Warning.Render(" " + m.action + " ")
+	case m.actionMsg != "" && m.actionErr:
+		status = s.Error.Render(" " + m.actionMsg + " ")
+	case m.actionMsg != "":
+		status = s.Success.Render(" " + m.actionMsg + " ")
+	}
+	right := status + s.HeaderMeta.Render(fmt.Sprintf(" %s ", time.Now().Format("15:04:05")))
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
@@ -302,7 +414,7 @@ func (m Model) renderHeader(s styles) string {
 
 func (m Model) renderFooter(s styles) string {
 	keys := []string{
-		"j/k move", "enter focus", "v view", "1/2/3 jump", "r refresh", "t theme", "q quit",
+		"j/k move", "enter focus", "v view", "s start", "S stop", "e shell", "r refresh", "t theme", "q quit",
 	}
 	var parts []string
 	for _, k := range keys {

@@ -106,6 +106,28 @@ func List() ([]VM, error) {
 	return vms, nil
 }
 
+// Start boots the named VM. Blocks until `limactl start` exits.
+func Start(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	_, err := runOut(ctx, "start", name)
+	return err
+}
+
+// Stop shuts the named VM down gracefully.
+func Stop(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, err := runOut(ctx, "stop", name)
+	return err
+}
+
+// ShellCmd returns an *exec.Cmd that opens an interactive guest shell.
+// The caller is responsible for wiring up stdio (typically via tea.ExecProcess).
+func ShellCmd(name string) *exec.Cmd {
+	return exec.Command(bin(), "shell", name)
+}
+
 // Processes runs `ps` inside the guest and returns the top processes sorted by CPU.
 func Processes(name string) ([]Process, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
