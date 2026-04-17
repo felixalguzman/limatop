@@ -581,19 +581,22 @@ func (m Model) renderTable(s styles, innerW int) string {
 		{"MEM%", 15},
 		{"CPU", 5},
 		{"MEM", 10},
-		{"DISK", 10},
+		{"DISK", 18},
 		{"OS", 7},
 		{"ARCH", 9},
 		{"TYPE", 6},
 		{"SSH", 22},
 	}
 
+	// Each row is prefixed with a 2-char selection gutter, so the columns
+	// themselves only get innerW - 2 of horizontal space.
+	const gutter = 2
 	total := 0
 	for _, c := range cols {
 		total += c.width + 1
 	}
-	if total > innerW {
-		overflow := total - innerW
+	if total > innerW-gutter {
+		overflow := total - (innerW - gutter)
 		cols[len(cols)-1].width -= overflow
 		if cols[len(cols)-1].width < 3 {
 			cols[len(cols)-1].width = 3
@@ -623,7 +626,7 @@ func (m Model) renderTable(s styles, innerW int) string {
 			m.sparkCell(vm, m.memHistory[vm.Name], th.Info, th, cols[4].width),
 			intOrDash(vm.CPUs),
 			bytesOrDash(vm.Memory),
-			bytesOrDash(vm.Disk),
+			diskUsage(vm, m.usage[vm.Name]),
 			orDash(vm.Config.OS),
 			orDash(vm.Arch),
 			orDash(vm.VMType),
@@ -1136,6 +1139,15 @@ func bytesOrDash(b int64) string {
 		return "—"
 	}
 	return humanBytes(b)
+}
+
+// diskUsage shows live "used / total" from the guest's df output when
+// available; otherwise falls back to the allocated disk size.
+func diskUsage(vm lima.VM, u lima.Usage) string {
+	if vm.Status == "Running" && u.DiskTotal > 0 {
+		return fmt.Sprintf("%s / %s", humanBytes(u.DiskUsed), humanBytes(u.DiskTotal))
+	}
+	return bytesOrDash(vm.Disk)
 }
 
 func orDash(v string) string {
