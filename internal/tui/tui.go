@@ -578,6 +578,7 @@ func (m Model) renderTable(s styles, innerW int) string {
 		{"NAME", 18},
 		{"STATUS", 10},
 		{"CPU%", 15},
+		{"MEM%", 15},
 		{"CPU", 5},
 		{"MEM", 10},
 		{"DISK", 10},
@@ -618,7 +619,8 @@ func (m Model) renderTable(s styles, innerW int) string {
 			statusDot(s, vm.Status),
 			vm.Name,
 			statusLabel(s, vm.Status),
-			m.sparkCell(vm, th, cols[3].width),
+			m.sparkCell(vm, m.cpuHistory[vm.Name], th.Accent, th, cols[3].width),
+			m.sparkCell(vm, m.memHistory[vm.Name], th.Info, th, cols[4].width),
 			intOrDash(vm.CPUs),
 			bytesOrDash(vm.Memory),
 			bytesOrDash(vm.Disk),
@@ -644,8 +646,8 @@ func (m Model) renderTable(s styles, innerW int) string {
 			switch idx {
 			case 0:
 				row.WriteString(lipgloss.NewStyle().Width(c.width).Render(cell))
-			case 2, 3:
-				// status label + sparkline carry their own color
+			case 2, 3, 4:
+				// status label + CPU%/MEM% sparklines carry their own color
 				row.WriteString(lipgloss.NewStyle().Width(c.width).Render(truncate(cell, c.width)))
 			default:
 				row.WriteString(rowStyle.Width(c.width).Render(truncate(cell, c.width)))
@@ -1031,13 +1033,12 @@ func brailleChart(samples []float64, width, height int, fg lipgloss.Color) strin
 	return strings.Join(lines, "\n")
 }
 
-// sparkCell renders a 1-row braille area chart plus "pct%" for the CPU%
-// column, or a dash for VMs with no live usage yet.
-func (m Model) sparkCell(vm lima.VM, th theme.Theme, width int) string {
+// sparkCell renders a 1-row braille area chart plus "pct%" for a metric
+// column, or a dash for VMs with no live history yet.
+func (m Model) sparkCell(vm lima.VM, hist []float64, color lipgloss.Color, th theme.Theme, width int) string {
 	if vm.Status != "Running" {
 		return lipgloss.NewStyle().Foreground(th.Muted).Render("—")
 	}
-	hist := m.cpuHistory[vm.Name]
 	if len(hist) == 0 {
 		return lipgloss.NewStyle().Foreground(th.Muted).Render("…")
 	}
@@ -1045,7 +1046,7 @@ func (m Model) sparkCell(vm lima.VM, th theme.Theme, width int) string {
 	if sparkW < 4 {
 		sparkW = 4
 	}
-	spark := brailleChart(hist, sparkW, 1, th.Accent)
+	spark := brailleChart(hist, sparkW, 1, color)
 	pct := hist[len(hist)-1]
 	pctStr := lipgloss.NewStyle().Foreground(th.Foreground).Render(fmt.Sprintf("%4.0f%%", pct))
 	return spark + " " + pctStr
