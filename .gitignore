@@ -1,0 +1,6 @@
+/limatop
+*.test
+*.out
+.idea/
+.vscode/
+.claude/
