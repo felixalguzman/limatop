@@ -570,36 +570,77 @@ func plural(n int) string {
 // ---- table view ----
 
 func (m Model) renderTable(s styles, innerW int) string {
+	// width = minimum width; flex = weight for distributing surplus space.
+	// flex==0 means fixed-width.
 	cols := []struct {
 		name  string
 		width int
+		flex  int
 	}{
-		{"", 2},
-		{"NAME", 18},
-		{"STATUS", 10},
-		{"CPU%", 15},
-		{"MEM%", 15},
-		{"CPU", 5},
-		{"MEM", 10},
-		{"DISK", 18},
-		{"OS", 7},
-		{"ARCH", 9},
-		{"TYPE", 6},
-		{"SSH", 22},
+		{"", 2, 0},
+		{"NAME", 12, 2},
+		{"STATUS", 10, 0},
+		{"CPU%", 12, 3},
+		{"MEM%", 12, 3},
+		{"CPU", 5, 0},
+		{"MEM", 10, 0},
+		{"DISK", 16, 2},
+		{"OS", 7, 0},
+		{"ARCH", 9, 0},
+		{"TYPE", 6, 0},
+		{"SSH", 14, 2},
 	}
 
-	// Each row is prefixed with a 2-char selection gutter, so the columns
-	// themselves only get innerW - 2 of horizontal space.
+	// Each row is prefixed with a 2-char selection gutter; between columns
+	// there's a single space separator, so each column effectively consumes
+	// width+1 cells.
 	const gutter = 2
 	total := 0
+	totalFlex := 0
 	for _, c := range cols {
 		total += c.width + 1
+		totalFlex += c.flex
 	}
-	if total > innerW-gutter {
-		overflow := total - (innerW - gutter)
-		cols[len(cols)-1].width -= overflow
-		if cols[len(cols)-1].width < 3 {
-			cols[len(cols)-1].width = 3
+	budget := innerW - gutter
+	switch {
+	case total < budget && totalFlex > 0:
+		// Distribute surplus across flex columns by weight.
+		surplus := budget - total
+		for i := range cols {
+			if cols[i].flex == 0 {
+				continue
+			}
+			add := surplus * cols[i].flex / totalFlex
+			cols[i].width += add
+		}
+		// Any remainder from integer division goes to the widest-flex column.
+		assigned := 0
+		for _, c := range cols {
+			assigned += c.width + 1
+		}
+		if leftover := budget - assigned; leftover > 0 {
+			for i := range cols {
+				if cols[i].flex > 0 {
+					cols[i].width += leftover
+					break
+				}
+			}
+		}
+	case total > budget:
+		// Shrink from the tail until we fit.
+		overflow := total - budget
+		for i := len(cols) - 1; i >= 0 && overflow > 0; i-- {
+			if cols[i].flex == 0 && cols[i].name != "SSH" {
+				continue
+			}
+			shrink := cols[i].width - 3
+			if shrink > overflow {
+				shrink = overflow
+			}
+			if shrink > 0 {
+				cols[i].width -= shrink
+				overflow -= shrink
+			}
 		}
 	}
 
