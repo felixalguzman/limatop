@@ -73,6 +73,27 @@ func TestSelectionBounds(t *testing.T) {
 	}
 }
 
+func TestDeleteRequiresConfirmation(t *testing.T) {
+	m := seedModel()
+	// pressing d opens the confirm modal, does not dispatch delete
+	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	mm := m2.(Model)
+	if mm.confirmDelete != "test" {
+		t.Fatalf("expected confirmDelete=test, got %q", mm.confirmDelete)
+	}
+	if cmd != nil {
+		t.Fatalf("d should not dispatch a command until confirmed")
+	}
+	if !strings.Contains(mm.View(), "Delete VM?") {
+		t.Fatalf("confirm modal not rendered")
+	}
+	// n cancels
+	m3, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if m3.(Model).confirmDelete != "" {
+		t.Fatalf("n should cancel confirmation")
+	}
+}
+
 func TestEnterGoesToFocus(t *testing.T) {
 	m := seedModel()
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})

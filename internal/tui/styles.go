@@ -23,9 +23,12 @@ type styles struct {
 	HeaderMeta lipgloss.Style
 	Title      lipgloss.Style
 
-	FooterBar lipgloss.Style
-	Key       lipgloss.Style
-	KeyCap    lipgloss.Style
+	FooterBar    lipgloss.Style
+	Key          lipgloss.Style
+	KeyCap       lipgloss.Style
+	KeyCapDanger lipgloss.Style
+
+	ConfirmCard lipgloss.Style
 
 	TableHeader    lipgloss.Style
 	Row            lipgloss.Style
@@ -74,6 +77,14 @@ func (m Model) styles() styles {
 		KeyCap: lipgloss.NewStyle().
 			Foreground(t.Accent).
 			Bold(true),
+		KeyCapDanger: lipgloss.NewStyle().
+			Foreground(t.Error).
+			Bold(true),
+
+		ConfirmCard: lipgloss.NewStyle().
+			Border(rounded).
+			BorderForeground(t.Error).
+			Padding(1, 3),
 
 		TableHeader: lipgloss.NewStyle().
 			Foreground(t.Muted).

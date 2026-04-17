@@ -80,7 +80,10 @@ type Model struct {
 	action    string // e.g. "starting default…"
 	actionMsg string // short result, e.g. "started default" or "stop failed: …"
 	actionErr bool
-	busy      map[string]string // vm -> in-flight action verb ("start"/"stop")
+	busy      map[string]string // vm -> in-flight action verb ("start"/"stop"/"delete")
+
+	// When non-empty, a modal asks the user to confirm deleting this VM.
+	confirmDelete string
 }
 
 func New() Model {
@@ -143,6 +146,24 @@ func shellVM(name string) tea.Cmd {
 	})
 }
 
+func deleteVM(name string) tea.Cmd {
+	return func() tea.Msg {
+		return actionDoneMsg{vm: name, action: "delete", err: lima.Delete(name)}
+	}
+}
+
+func pastTense(verb string) string {
+	switch verb {
+	case "start":
+		return "started"
+	case "stop":
+		return "stopped"
+	case "delete":
+		return "deleted"
+	}
+	return verb + "ed"
+}
+
 // ---- update ----
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -200,7 +221,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.actionMsg = fmt.Sprintf("%s %s failed: %s", msg.action, msg.vm, msg.err)
 			m.actionErr = true
 		} else {
-			m.actionMsg = fmt.Sprintf("%sed %s", msg.action, msg.vm)
+			m.actionMsg = fmt.Sprintf("%s %s", pastTense(msg.action), msg.vm)
 			m.actionErr = false
 		}
 		return m, fetchVMs()
@@ -219,6 +240,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.confirmDelete != "" {
+		switch msg.String() {
+		case "y", "Y":
+			name := m.confirmDelete
+			m.confirmDelete = ""
+			m.busy[name] = "delete"
+			m.action = "deleting " + name + "…"
+			m.actionMsg = ""
+			return m, deleteVM(name)
+		case "n", "N", "esc", "q", "ctrl+c":
+			m.confirmDelete = ""
+		}
+		return m, nil
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -306,6 +341,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.actionMsg = ""
 		return m, shellVM(vm.Name)
+	case "d":
+		vm := m.selectedVM()
+		if vm == nil {
+			return m, nil
+		}
+		if _, inFlight := m.busy[vm.Name]; inFlight {
+			return m, nil
+		}
+		m.confirmDelete = vm.Name
+		m.actionMsg = ""
 	}
 	return m, nil
 }
@@ -362,6 +407,8 @@ func (m Model) View() string {
 		body = s.Muted.Render("loading lima VMs…")
 	case len(m.vms) == 0:
 		body = s.Muted.Render("no lima VMs found.\n\nrun `limactl start` to create one.")
+	case m.confirmDelete != "":
+		body = m.renderConfirmDelete(s, innerW, bodyHeight)
 	default:
 		switch m.view {
 		case ViewTable:
@@ -413,17 +460,56 @@ func (m Model) renderHeader(s styles) string {
 }
 
 func (m Model) renderFooter(s styles) string {
-	hints := [][2]string{
-		{"j/k", "move"}, {"enter", "focus"}, {"v", "view"},
-		{"b", "boot"}, {"h", "halt"}, {"e", "shell"},
-		{"r", "refresh"}, {"t", "theme"}, {"q", "quit"},
+	if m.confirmDelete != "" {
+		hints := [][2]string{
+			{"y", "confirm delete"}, {"n/esc", "cancel"},
+		}
+		var parts []string
+		for _, h := range hints {
+			cap := s.KeyCap
+			if h[0] == "y" {
+				cap = s.KeyCapDanger
+			}
+			parts = append(parts, cap.Render(h[0])+" "+s.Muted.Render(h[1]))
+		}
+		hint := strings.Join(parts, s.Muted.Render(" · "))
+		return s.FooterBar.Width(m.width).Render(" " + hint + " ")
+	}
+	hints := []struct {
+		key, label string
+		danger     bool
+	}{
+		{"j/k", "move", false}, {"enter", "focus", false}, {"v", "view", false},
+		{"b", "boot", false}, {"h", "halt", false}, {"e", "shell", false},
+		{"d", "delete", true},
+		{"r", "refresh", false}, {"t", "theme", false}, {"q", "quit", false},
 	}
 	var parts []string
 	for _, h := range hints {
-		parts = append(parts, s.KeyCap.Render(h[0])+" "+s.Muted.Render(h[1]))
+		cap := s.KeyCap
+		if h.danger {
+			cap = s.KeyCapDanger
+		}
+		parts = append(parts, cap.Render(h.key)+" "+s.Muted.Render(h.label))
 	}
 	hint := strings.Join(parts, s.Muted.Render(" · "))
 	return s.FooterBar.Width(m.width).Render(" " + hint + " ")
+}
+
+func (m Model) renderConfirmDelete(s styles, innerW, height int) string {
+	name := m.confirmDelete
+	lines := []string{
+		s.Error.Bold(true).Render("Delete VM?"),
+		"",
+		"This will permanently remove " + s.Value.Bold(true).Render(name) + ".",
+		s.Muted.Render("All disks and config for this VM will be destroyed."),
+		"",
+		s.KeyCapDanger.Render("y") + " " + s.Muted.Render("confirm") +
+			"    " +
+			s.KeyCap.Render("n/esc") + " " + s.Muted.Render("cancel"),
+	}
+	modal := s.ConfirmCard.Render(strings.Join(lines, "\n"))
+	return lipgloss.Place(innerW, height, lipgloss.Center, lipgloss.Center, modal)
 }
 
 func viewName(v View) string {

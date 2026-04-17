@@ -122,6 +122,15 @@ func Stop(name string) error {
 	return err
 }
 
+// Delete removes the named VM and all of its data. Uses --force so it also
+// works on VMs that are still running; callers are expected to confirm first.
+func Delete(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, err := runOut(ctx, "delete", "--force", name)
+	return err
+}
+
 // ShellCmd returns an *exec.Cmd that opens an interactive guest shell.
 // The caller is responsible for wiring up stdio (typically via tea.ExecProcess).
 func ShellCmd(name string) *exec.Cmd {
