@@ -41,6 +41,7 @@ type styles struct {
 
 	FocusCard    lipgloss.Style
 	FocusTitle   lipgloss.Style
+	ChartCard    lipgloss.Style
 	ProcessCard  lipgloss.Style
 	ProcessTitle lipgloss.Style
 }
@@ -114,6 +115,10 @@ func (m Model) styles() styles {
 		FocusTitle: lipgloss.NewStyle().
 			Foreground(t.Accent).
 			Bold(true),
+		ChartCard: lipgloss.NewStyle().
+			Border(rounded).
+			BorderForeground(t.Muted).
+			Padding(1, 2),
 		ProcessCard: lipgloss.NewStyle().
 			Border(rounded).
 			BorderForeground(t.Muted).

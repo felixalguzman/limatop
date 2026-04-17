@@ -83,6 +83,32 @@ func TestSparklinePopulates(t *testing.T) {
 	}
 }
 
+func TestFocusChartHasBraille(t *testing.T) {
+	m := seedModel()
+	m.view = ViewFocus
+	// A non-trivial history so the chart fills some dots.
+	var hist []float64
+	for i := 0; i < 40; i++ {
+		hist = append(hist, float64(20+(i*3)%60))
+	}
+	m.cpuHistory["test"] = hist
+	out := m.View()
+	// Expect at least one "filled" braille char (not the all-blank U+2800).
+	filled := false
+	for _, r := range out {
+		if r > 0x2800 && r <= 0x28FF {
+			filled = true
+			break
+		}
+	}
+	if !filled {
+		t.Fatalf("expected populated braille chart in focus view, got:\n%s", out)
+	}
+	if !strings.Contains(out, "cpu history") {
+		t.Fatalf("expected chart panel title, got:\n%s", out)
+	}
+}
+
 func TestDeleteRequiresConfirmation(t *testing.T) {
 	m := seedModel()
 	// pressing d opens the confirm modal, does not dispatch delete

@@ -87,7 +87,7 @@ type Model struct {
 	confirmDelete string
 }
 
-const sparkSamples = 20 // ring-buffer length per VM (≈1 min at refreshEvery=3s)
+const sparkSamples = 200 // ring-buffer length per VM (≈10 min at refreshEvery=3s)
 
 func New() Model {
 	return Model{
@@ -841,9 +841,75 @@ func (m Model) renderFocus(s styles, innerW, height int) string {
 
 	header := s.FocusCard.Width(totalW - borderOnly).Render(infoBlock)
 
-	procPanel := m.renderProcessPanel(s, totalW, contentW, height-lipgloss.Height(header)-2, vm)
+	chart := m.renderCPUChartPanel(s, totalW, contentW, vm)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", procPanel)
+	remaining := height - lipgloss.Height(header) - lipgloss.Height(chart) - 4
+	procPanel := m.renderProcessPanel(s, totalW, contentW, remaining, vm)
+
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", chart, "", procPanel)
+}
+
+func (m Model) renderCPUChartPanel(s styles, totalW, contentW int, vm *lima.VM) string {
+	th := m.theme()
+	lgw := totalW - borderOnly
+	hist := m.cpuHistory[vm.Name]
+
+	chartH := 5
+	if vm.Status != "Running" {
+		body := s.Muted.Render(fmt.Sprintf("cpu history unavailable — vm is %s.", strings.ToLower(vm.Status)))
+		return s.ChartCard.Width(lgw).Render(body)
+	}
+
+	title := s.ProcessTitle.Render("cpu history")
+	meta := ""
+	if len(hist) > 0 {
+		cur := hist[len(hist)-1]
+		peak := 0.0
+		for _, v := range hist {
+			if v > peak {
+				peak = v
+			}
+		}
+		meta = s.Muted.Render(fmt.Sprintf("now %5.1f%%   peak %5.1f%%   last ~%ds",
+			cur, peak, len(hist)*int(refreshEvery/time.Second)))
+	}
+	titleLine := title
+	if meta != "" {
+		gap := contentW - lipgloss.Width(title) - lipgloss.Width(meta)
+		if gap < 1 {
+			gap = 1
+		}
+		titleLine = title + strings.Repeat(" ", gap) + meta
+	}
+
+	// Left-side percentage axis labels take 4 cells + 1-cell gutter.
+	const axisW = 5
+	plotW := contentW - axisW
+	if plotW < 10 {
+		plotW = 10
+	}
+	chart := brailleChart(hist, plotW, chartH, th.Accent)
+
+	// Assemble axis + chart side by side.
+	axisLines := make([]string, chartH)
+	for i := range axisLines {
+		label := "    "
+		switch i {
+		case 0:
+			label = "100%"
+		case chartH / 2:
+			label = " 50%"
+		case chartH - 1:
+			label = "  0%"
+		}
+		axisLines[i] = s.Muted.Render(label)
+	}
+	chartLines := strings.Split(chart, "\n")
+	for i, ln := range chartLines {
+		chartLines[i] = axisLines[i] + " " + ln
+	}
+	body := strings.Join(append([]string{titleLine, ""}, chartLines...), "\n")
+	return s.ChartCard.Width(lgw).Render(body)
 }
 
 func focusResource(s styles, label string, barW int, fg, bg lipgloss.Color, pct float64, extra string, live bool) string {
@@ -937,6 +1003,67 @@ func (m Model) renderProcessPanel(s styles, totalW, contentW, height int, vm *li
 // ---- bar / helpers ----
 
 var sparkChars = []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+// brailleChart renders `samples` (0..100 each) as a right-aligned area chart
+// `width` cells wide and `height` rows tall, using unicode braille so each
+// cell carries 2 columns × 4 rows of dot resolution.
+func brailleChart(samples []float64, width, height int, fg lipgloss.Color) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	dotsW := width * 2
+	dotsH := height * 4
+
+	start := 0
+	if len(samples) > dotsW {
+		start = len(samples) - dotsW
+	}
+	vis := samples[start:]
+	offset := dotsW - len(vis) // left blank dot-columns when history < width
+
+	bits := make([][]int, height)
+	for i := range bits {
+		bits[i] = make([]int, width)
+	}
+	// [subCol][subRow] → bit mask, subRow 0=top, 3=bottom.
+	dotBit := [2][4]int{
+		{0x01, 0x02, 0x04, 0x40},
+		{0x08, 0x10, 0x20, 0x80},
+	}
+	for i, v := range vis {
+		dotCol := offset + i
+		cellCol := dotCol / 2
+		subCol := dotCol % 2
+		if cellCol >= width {
+			break
+		}
+		v = clampPct(v)
+		topDot := int(v / 100 * float64(dotsH))
+		if topDot > dotsH {
+			topDot = dotsH
+		}
+		// Fill from the bottom (r=0) up to the sample's height.
+		for r := 0; r < topDot; r++ {
+			cellRow := height - 1 - r/4
+			if cellRow < 0 {
+				break
+			}
+			subRow := 3 - r%4
+			bits[cellRow][cellCol] |= dotBit[subCol][subRow]
+		}
+	}
+
+	style := lipgloss.NewStyle().Foreground(fg)
+	lines := make([]string, height)
+	for r, row := range bits {
+		var b strings.Builder
+		for _, x := range row {
+			b.WriteRune(rune(0x2800 + x))
+		}
+		lines[r] = style.Render(b.String())
+	}
+	return strings.Join(lines, "\n")
+}
 
 // sparkCell renders "spark pct%" for the CPU% column, or a dash for VMs with
 // no live usage yet (stopped, or just booted).
