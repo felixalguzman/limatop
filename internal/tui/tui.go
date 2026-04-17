@@ -72,6 +72,10 @@ type Model struct {
 	cpuHistory  map[string][]float64 // ring of recent CPU% per VM (newest last)
 	memHistory  map[string][]float64
 	diskHistory map[string][]float64
+	netRxRate   map[string]float64 // current rx bytes/sec (for display)
+	netTxRate   map[string]float64
+	netHistory  map[string][]float64 // combined rx+tx rate sparkline (bytes/sec)
+	netPrev     map[string]netSnap   // last cumulative counter snapshot
 
 	width  int
 	height int
@@ -89,6 +93,11 @@ type Model struct {
 	confirmDelete string
 }
 
+type netSnap struct {
+	rx, tx int64
+	at     time.Time
+}
+
 const sparkSamples = 200 // ring-buffer length per VM (≈10 min at refreshEvery=3s)
 
 func New() Model {
@@ -101,6 +110,10 @@ func New() Model {
 		cpuHistory:  map[string][]float64{},
 		memHistory:  map[string][]float64{},
 		diskHistory: map[string][]float64{},
+		netRxRate:   map[string]float64{},
+		netTxRate:   map[string]float64{},
+		netHistory:  map[string][]float64{},
+		netPrev:     map[string]netSnap{},
 		busy:        map[string]string{},
 	}
 }
@@ -234,6 +247,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cpuHistory[msg.vm] = pushSample(m.cpuHistory[msg.vm], msg.usage.CPUPct)
 			m.memHistory[msg.vm] = pushSample(m.memHistory[msg.vm], msg.usage.MemPct)
 			m.diskHistory[msg.vm] = pushSample(m.diskHistory[msg.vm], msg.usage.DiskPct)
+
+			now := time.Now()
+			if prev, ok := m.netPrev[msg.vm]; ok {
+				elapsed := now.Sub(prev.at).Seconds()
+				if elapsed > 0 {
+					rx := float64(msg.usage.NetRxBytes-prev.rx) / elapsed
+					tx := float64(msg.usage.NetTxBytes-prev.tx) / elapsed
+					if rx < 0 {
+						rx = 0
+					}
+					if tx < 0 {
+						tx = 0
+					}
+					m.netRxRate[msg.vm] = rx
+					m.netTxRate[msg.vm] = tx
+					m.netHistory[msg.vm] = pushSample(m.netHistory[msg.vm], rx+tx)
+				}
+			}
+			m.netPrev[msg.vm] = netSnap{rx: msg.usage.NetRxBytes, tx: msg.usage.NetTxBytes, at: now}
 		}
 
 	case tickMsg:
@@ -990,6 +1022,13 @@ func (m Model) renderFocus(s styles, innerW, height int) string {
 	}
 	dskBlock := metricChart(s, "DSK", th.Purple, chartW, dskPct, dskLabel, haveUsage, m.diskHistory[vm.Name])
 
+	netHist := m.netHistory[vm.Name]
+	netLabel := "idle"
+	if running {
+		netLabel = fmt.Sprintf("↓%s  ↑%s", humanRate(m.netRxRate[vm.Name]), humanRate(m.netTxRate[vm.Name]))
+	}
+	netBlock := metricChart(s, "NET", th.Success, chartW, 0, netLabel, false, scaleToPeak(netHist))
+
 	sshInfo := lipgloss.JoinHorizontal(lipgloss.Top,
 		s.Muted.Render("SSH    "), s.Value.Render(sshTarget(*vm)),
 	)
@@ -1007,6 +1046,7 @@ func (m Model) renderFocus(s styles, innerW, height int) string {
 		cpuBlock, "",
 		memBlock, "",
 		dskBlock, "",
+		netBlock, "",
 		sshInfo, dirInfo, upInfo,
 	}), "\n")
 
@@ -1256,6 +1296,42 @@ func sshTarget(vm lima.VM) string {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("%s:%d", host, vm.SSHLocalPort)
+}
+
+// humanRate formats a bytes/second value with an auto-selected unit.
+func humanRate(bps float64) string {
+	if bps <= 0 {
+		return "0 B/s"
+	}
+	const unit = 1024.0
+	if bps < unit {
+		return fmt.Sprintf("%.0f B/s", bps)
+	}
+	div, exp := unit, 0
+	for n := bps / unit; n >= unit && exp < 5; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB/s", bps/div, "KMGTPE"[exp])
+}
+
+// scaleToPeak normalizes samples to 0..100 relative to the max observed.
+// Zero-peak (no data yet) returns zeros so an empty chart renders flat.
+func scaleToPeak(in []float64) []float64 {
+	peak := 0.0
+	for _, v := range in {
+		if v > peak {
+			peak = v
+		}
+	}
+	if peak <= 0 {
+		return in
+	}
+	out := make([]float64, len(in))
+	for i, v := range in {
+		out[i] = v / peak * 100
+	}
+	return out
 }
 
 func humanBytes(b int64) string {

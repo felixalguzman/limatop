@@ -44,15 +44,19 @@ type Process struct {
 }
 
 // Usage summarizes a guest's live resource usage (percentages 0..100).
+// NetRxBytes/NetTxBytes are cumulative counters summed across non-loopback
+// interfaces — callers should difference consecutive samples to get rates.
 type Usage struct {
-	CPUPct    float64
-	MemPct    float64
-	MemUsed   int64
-	MemTotal  int64
-	DiskPct   float64
-	DiskUsed  int64
-	DiskTotal int64
-	Uptime    string
+	CPUPct     float64
+	MemPct     float64
+	MemUsed    int64
+	MemTotal   int64
+	DiskPct    float64
+	DiskUsed   int64
+	DiskTotal  int64
+	Uptime     string
+	NetRxBytes int64
+	NetTxBytes int64
 }
 
 func bin() string {
@@ -174,7 +178,8 @@ func GuestUsage(name string) (Usage, error) {
 	script := `awk '/^cpu / {t=$2+$3+$4+$5+$6+$7+$8; i=$5+$6; u=t-i; print "cpu", u, t}' /proc/stat; ` +
 		`awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {print "mem", (t-a)*1024, t*1024}' /proc/meminfo; ` +
 		`df -B1 --output=used,size / | tail -1 | awk '{print "disk", $1, $2}'; ` +
-		`awk '{print "up", int($1)}' /proc/uptime`
+		`awk '{print "up", int($1)}' /proc/uptime; ` +
+		`awk 'NR>2 && $1 !~ /^lo:/ {rx+=$2; tx+=$10} END {print "net", rx+0, tx+0}' /proc/net/dev`
 	out, err := runOut(ctx, "shell", name, "sh", "-c", script)
 	if err != nil {
 		return Usage{}, err
@@ -207,6 +212,11 @@ func GuestUsage(name string) (Usage, error) {
 				var secs int64
 				fmt.Sscan(fields[1], &secs)
 				u.Uptime = humanDuration(secs)
+			}
+		case "net":
+			if len(fields) >= 3 {
+				fmt.Sscan(fields[1], &u.NetRxBytes)
+				fmt.Sscan(fields[2], &u.NetTxBytes)
 			}
 		}
 	}
