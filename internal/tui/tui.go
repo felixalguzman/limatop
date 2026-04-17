@@ -970,8 +970,6 @@ func (m Model) renderProcessPanel(s styles, totalW, contentW, height int, vm *li
 
 // ---- bar / helpers ----
 
-var sparkChars = []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
-
 // brailleChart renders `samples` (0..100 each) as a right-aligned area chart
 // `width` cells wide and `height` rows tall, using unicode braille so each
 // cell carries 2 columns × 4 rows of dot resolution.
@@ -1033,8 +1031,8 @@ func brailleChart(samples []float64, width, height int, fg lipgloss.Color) strin
 	return strings.Join(lines, "\n")
 }
 
-// sparkCell renders "spark pct%" for the CPU% column, or a dash for VMs with
-// no live usage yet (stopped, or just booted).
+// sparkCell renders a 1-row braille area chart plus "pct%" for the CPU%
+// column, or a dash for VMs with no live usage yet.
 func (m Model) sparkCell(vm lima.VM, th theme.Theme, width int) string {
 	if vm.Status != "Running" {
 		return lipgloss.NewStyle().Foreground(th.Muted).Render("—")
@@ -1043,45 +1041,14 @@ func (m Model) sparkCell(vm lima.VM, th theme.Theme, width int) string {
 	if len(hist) == 0 {
 		return lipgloss.NewStyle().Foreground(th.Muted).Render("…")
 	}
-	sparkW := width - 5 // reserve "  42%" (5 chars) on the right
+	sparkW := width - 5 // reserve " 42%" (5 chars) on the right
 	if sparkW < 4 {
 		sparkW = 4
 	}
-	spark := renderSparkline(hist, sparkW, th.Accent)
+	spark := brailleChart(hist, sparkW, 1, th.Accent)
 	pct := hist[len(hist)-1]
 	pctStr := lipgloss.NewStyle().Foreground(th.Foreground).Render(fmt.Sprintf("%4.0f%%", pct))
 	return spark + " " + pctStr
-}
-
-// renderSparkline draws `samples` as unicode block chars, right-aligned in
-// `width`. Empty slots on the left are filled with the lowest step so the
-// baseline stays visible even before history is populated.
-func renderSparkline(samples []float64, width int, fg lipgloss.Color) string {
-	if width <= 0 {
-		return ""
-	}
-	var b strings.Builder
-	pad := width - len(samples)
-	if pad < 0 {
-		pad = 0
-		samples = samples[len(samples)-width:]
-	}
-	base := lipgloss.NewStyle().Foreground(fg)
-	for i := 0; i < pad; i++ {
-		b.WriteRune('·')
-	}
-	for _, v := range samples {
-		v = clampPct(v)
-		idx := int(v / 100 * float64(len(sparkChars)))
-		if idx >= len(sparkChars) {
-			idx = len(sparkChars) - 1
-		}
-		if idx < 0 {
-			idx = 0
-		}
-		b.WriteRune(sparkChars[idx])
-	}
-	return base.Render(b.String())
 }
 
 func renderBar(width int, pct float64, fg, bg lipgloss.Color) string {

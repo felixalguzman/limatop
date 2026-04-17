@@ -73,13 +73,19 @@ func TestSelectionBounds(t *testing.T) {
 	}
 }
 
-func TestSparklinePopulates(t *testing.T) {
+func TestTableSparkIsBraille(t *testing.T) {
 	m := seedModel()
-	m.cpuHistory["test"] = []float64{5, 25, 55, 95, 70, 30}
+	m.cpuHistory["test"] = []float64{5, 25, 55, 95, 70, 30, 40, 60, 80}
 	out := m.View()
-	// Expect at least one block glyph from the sparkline palette.
-	if !strings.ContainsAny(out, "▁▂▃▄▅▆▇█") {
-		t.Fatalf("expected sparkline block chars in rendered table, got:\n%s", out)
+	filled := false
+	for _, r := range out {
+		if r > 0x2800 && r <= 0x28FF {
+			filled = true
+			break
+		}
+	}
+	if !filled {
+		t.Fatalf("expected braille chars in table CPU%% column, got:\n%s", out)
 	}
 }
 
