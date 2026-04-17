@@ -67,8 +67,9 @@ type Model struct {
 	procs    []lima.Process
 	procsErr error
 
-	usage    map[string]lima.Usage
-	usageErr map[string]error
+	usage      map[string]lima.Usage
+	usageErr   map[string]error
+	cpuHistory map[string][]float64 // ring of recent CPU% per VM (newest last)
 
 	width  int
 	height int
@@ -86,14 +87,17 @@ type Model struct {
 	confirmDelete string
 }
 
+const sparkSamples = 20 // ring-buffer length per VM (≈1 min at refreshEvery=3s)
+
 func New() Model {
 	return Model{
-		themes:   theme.All(),
-		view:     ViewTable,
-		loading:  true,
-		usage:    map[string]lima.Usage{},
-		usageErr: map[string]error{},
-		busy:     map[string]string{},
+		themes:     theme.All(),
+		view:       ViewTable,
+		loading:    true,
+		usage:      map[string]lima.Usage{},
+		usageErr:   map[string]error{},
+		cpuHistory: map[string][]float64{},
+		busy:       map[string]string{},
 	}
 }
 
@@ -176,6 +180,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case vmsMsg:
+		firstLoad := m.loading
 		m.loading = false
 		m.err = msg.err
 		m.vms = msg.vms
@@ -185,10 +190,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.selected < 0 {
 			m.selected = 0
 		}
+		var cmds []tea.Cmd
+		if firstLoad {
+			for _, vm := range m.vms {
+				if vm.Status == "Running" {
+					cmds = append(cmds, fetchUsage(vm.Name))
+				}
+			}
+		}
 		if m.view == ViewFocus {
 			if vm := m.selectedVM(); vm != nil && vm.Status == "Running" {
-				return m, tea.Batch(fetchProcs(vm.Name), fetchUsage(vm.Name))
+				cmds = append(cmds, fetchProcs(vm.Name))
 			}
+		}
+		if len(cmds) > 0 {
+			return m, tea.Batch(cmds...)
 		}
 
 	case procsMsg:
@@ -203,13 +219,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.usage[msg.vm] = msg.usage
 			delete(m.usageErr, msg.vm)
+			hist := append(m.cpuHistory[msg.vm], msg.usage.CPUPct)
+			if len(hist) > sparkSamples {
+				hist = hist[len(hist)-sparkSamples:]
+			}
+			m.cpuHistory[msg.vm] = hist
 		}
 
 	case tickMsg:
 		cmds := []tea.Cmd{fetchVMs(), tick()}
+		for _, vm := range m.vms {
+			if vm.Status == "Running" {
+				cmds = append(cmds, fetchUsage(vm.Name))
+			}
+		}
 		if m.view == ViewFocus {
 			if vm := m.selectedVM(); vm != nil && vm.Status == "Running" {
-				cmds = append(cmds, fetchProcs(vm.Name), fetchUsage(vm.Name))
+				cmds = append(cmds, fetchProcs(vm.Name))
 			}
 		}
 		return m, tea.Batch(cmds...)
@@ -541,6 +567,7 @@ func (m Model) renderTable(s styles, innerW int) string {
 		{"", 2},
 		{"NAME", 18},
 		{"STATUS", 10},
+		{"CPU%", 15},
 		{"CPU", 5},
 		{"MEM", 10},
 		{"DISK", 10},
@@ -574,12 +601,14 @@ func (m Model) renderTable(s styles, innerW int) string {
 
 	rows := []string{header.String(), divider}
 
+	th := m.theme()
 	for i, vm := range m.vms {
 		selected := i == m.selected
 		cells := []string{
 			statusDot(s, vm.Status),
 			vm.Name,
 			statusLabel(s, vm.Status),
+			m.sparkCell(vm, th, cols[3].width),
 			intOrDash(vm.CPUs),
 			bytesOrDash(vm.Memory),
 			bytesOrDash(vm.Disk),
@@ -602,12 +631,13 @@ func (m Model) renderTable(s styles, innerW int) string {
 		}
 		for idx, c := range cols {
 			cell := cells[idx]
-			if idx == 0 {
+			switch idx {
+			case 0:
 				row.WriteString(lipgloss.NewStyle().Width(c.width).Render(cell))
-			} else if idx == 2 {
-				// status label keeps its own color
+			case 2, 3:
+				// status label + sparkline carry their own color
 				row.WriteString(lipgloss.NewStyle().Width(c.width).Render(truncate(cell, c.width)))
-			} else {
+			default:
 				row.WriteString(rowStyle.Width(c.width).Render(truncate(cell, c.width)))
 			}
 			row.WriteString(" ")
@@ -905,6 +935,59 @@ func (m Model) renderProcessPanel(s styles, totalW, contentW, height int, vm *li
 }
 
 // ---- bar / helpers ----
+
+var sparkChars = []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+// sparkCell renders "spark pct%" for the CPU% column, or a dash for VMs with
+// no live usage yet (stopped, or just booted).
+func (m Model) sparkCell(vm lima.VM, th theme.Theme, width int) string {
+	if vm.Status != "Running" {
+		return lipgloss.NewStyle().Foreground(th.Muted).Render("—")
+	}
+	hist := m.cpuHistory[vm.Name]
+	if len(hist) == 0 {
+		return lipgloss.NewStyle().Foreground(th.Muted).Render("…")
+	}
+	sparkW := width - 5 // reserve "  42%" (5 chars) on the right
+	if sparkW < 4 {
+		sparkW = 4
+	}
+	spark := renderSparkline(hist, sparkW, th.Accent)
+	pct := hist[len(hist)-1]
+	pctStr := lipgloss.NewStyle().Foreground(th.Foreground).Render(fmt.Sprintf("%4.0f%%", pct))
+	return spark + " " + pctStr
+}
+
+// renderSparkline draws `samples` as unicode block chars, right-aligned in
+// `width`. Empty slots on the left are filled with the lowest step so the
+// baseline stays visible even before history is populated.
+func renderSparkline(samples []float64, width int, fg lipgloss.Color) string {
+	if width <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	pad := width - len(samples)
+	if pad < 0 {
+		pad = 0
+		samples = samples[len(samples)-width:]
+	}
+	base := lipgloss.NewStyle().Foreground(fg)
+	for i := 0; i < pad; i++ {
+		b.WriteRune('·')
+	}
+	for _, v := range samples {
+		v = clampPct(v)
+		idx := int(v / 100 * float64(len(sparkChars)))
+		if idx >= len(sparkChars) {
+			idx = len(sparkChars) - 1
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		b.WriteRune(sparkChars[idx])
+	}
+	return base.Render(b.String())
+}
 
 func renderBar(width int, pct float64, fg, bg lipgloss.Color) string {
 	if width < 1 {

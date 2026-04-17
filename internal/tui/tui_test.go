@@ -73,6 +73,16 @@ func TestSelectionBounds(t *testing.T) {
 	}
 }
 
+func TestSparklinePopulates(t *testing.T) {
+	m := seedModel()
+	m.cpuHistory["test"] = []float64{5, 25, 55, 95, 70, 30}
+	out := m.View()
+	// Expect at least one block glyph from the sparkline palette.
+	if !strings.ContainsAny(out, "▁▂▃▄▅▆▇█") {
+		t.Fatalf("expected sparkline block chars in rendered table, got:\n%s", out)
+	}
+}
+
 func TestDeleteRequiresConfirmation(t *testing.T) {
 	m := seedModel()
 	// pressing d opens the confirm modal, does not dispatch delete
